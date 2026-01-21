@@ -20,10 +20,9 @@ def run():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- CONFIG (Updated Admin List) ---
-API_TOKEN = '8390111066:AAGP8GQZWBA0MnHiJN5ZMpTK2UgQb2xm100'
+# --- CONFIG (Naya Token Updated) ---
+API_TOKEN = '8390111066:AAFGdAV0Wo0gqmw0QDysbbhqDe7jI5IASL8'
 GEMINI_KEY = 'AIzaSyBO5AKWQIckPzKDXgHOaSMqFzbs7ogbtvQ'
-# Purane + Naye Admins
 ADMIN_IDS = [8369001361, 906332891, 8306853454, 1011842896, 8322056037]
 
 genai.configure(api_key=GEMINI_KEY)
@@ -33,16 +32,11 @@ storage = MemoryStorage()
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot, storage=storage)
 
+# States (Steps)
 class ComplaintState(StatesGroup):
     waiting_for_issue = State()
     waiting_for_photo = State()
     waiting_for_confirm = State()
-
-SYSTEM_INSTRUCTION = (
-    "You are DCW Support AI. Be professional. "
-    "Step 1: Ask for the issue. Step 2: Ask for screenshot or type /skip. "
-    "Step 3: Show summary and ask to Submit. Reply in user's language."
-)
 
 # --- HANDLERS ---
 
@@ -50,12 +44,16 @@ SYSTEM_INSTRUCTION = (
 async def start_handler(message: types.Message, state: FSMContext):
     await state.finish()
     await ComplaintState.waiting_for_issue.set()
-    await message.reply("<b>Welcome to DCW Support AI</b> 🛠\n\nPlease describe your problem in detail.")
+    await message.reply("<b>Welcome to DCW Support AI</b> 🛠\n\nMain aapki kaise madad kar sakta hoon? Kripya apni pareshani detail mein batayein.")
 
 @dp.message_handler(state=ComplaintState.waiting_for_issue)
 async def process_issue(message: types.Message, state: FSMContext):
     await state.update_data(issue_text=message.text)
-    response = ai_model.generate_content(f"{SYSTEM_INSTRUCTION}\nUser issue: {message.text}. Ask for proof/screenshot or /skip.")
+    
+    # AI response to build trust
+    prompt = f"User reported: {message.text}. Reply politely in their language and ask for a screenshot/proof. If they don't have one, tell them to type /skip."
+    response = ai_model.generate_content(prompt)
+    
     await ComplaintState.waiting_for_photo.set()
     await message.reply(response.text)
 
@@ -66,19 +64,22 @@ async def process_photo(message: types.Message, state: FSMContext):
     elif message.text and message.text.lower() == '/skip':
         await state.update_data(photo_id=None)
     else:
-        await message.reply("Please send a screenshot or type /skip.")
+        await message.reply("Kripya ek screenshot bhejein ya aage badhne ke liye /skip type karein.")
         return
 
     data = await state.get_data()
-    ticket_id = random.randint(10000, 99999)
+    ticket_id = random.randint(100000, 999999)
     await state.update_data(ticket_id=ticket_id)
     
-    summary = ai_model.generate_content(f"Summarize this for review: {data['issue_text']}. Tell user to click Submit.")
+    # AI summary for the final step
+    summary_prompt = f"Create a short professional summary of this complaint: {data['issue_text']}. Ask the user to click 'Submit' if everything is correct."
+    summary = ai_model.generate_content(summary_prompt)
     
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("Submit ✅", callback_data="final_sub"),
-        InlineKeyboardButton("Restart ❌", callback_data="restart")
+    kb = InlineKeyboardMarkup(row_width=1).add(
+        InlineKeyboardButton("Submit Complaint ✅", callback_data="final_sub"),
+        InlineKeyboardButton("Restart / Edit ❌", callback_data="restart")
     )
+    
     await ComplaintState.waiting_for_confirm.set()
     await message.reply(f"<b>Ticket ID: #{ticket_id}</b>\n\n{summary.text}", reply_markup=kb)
 
@@ -105,16 +106,17 @@ async def send_to_admins(call: types.CallbackQuery, state: FSMContext):
                 await bot.send_message(admin_id, report)
         except: pass
 
-    await call.message.edit_text(f"<b>Done! ✅ Your complaint (Ticket #{tid}) has been sent to all 5 Admins.</b>")
+    await call.message.edit_text(f"<b>Done! ✅ Aapki complaint (Ticket #{tid}) Admins ko bhej di gayi hai.</b>")
     await state.finish()
 
 @dp.callback_query_handler(text="restart", state="*")
 async def restart(call: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await ComplaintState.waiting_for_issue.set()
-    await call.message.edit_text("Restarting... Please describe your issue.")
+    await call.message.edit_text("Theek hai, shuru se shuru karte hain. Apni pareshani likhiye.")
 
 if __name__ == '__main__':
     Thread(target=run).start()
+    print("DCW Bot is starting with new token...")
     executor.start_polling(dp, skip_updates=True)
     
