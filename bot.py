@@ -1,109 +1,115 @@
 import os
+import asyncio
 from flask import Flask
 from threading import Thread
 from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import google.generativeai as genai
 
-# Server for Render
+# --- RENDER PORT FIX ---
 app = Flask('')
 @app.route('/')
-def home(): return "DCW BOT IS RUNNING"
+def home(): return "DCW BOT IS LIVE"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# CONFIG
+# --- CONFIG ---
 API_TOKEN = '8390111066:AAGP8GQZWBA0MnHiJN5ZMpTK2UgQb2xm100'
 GEMINI_KEY = 'AIzaSyBO5AKWQIckPzKDXgHOaSMqFzbs7ogbtvQ'
 ADMIN_IDS = [8369001361, 906332891, 8306853454]
 
 genai.configure(api_key=GEMINI_KEY)
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# Storage aur Bot setup
+storage = MemoryStorage()
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=storage)
 
-# Conversation states
-user_data = {}
+# States define karna (Steps)
+class ComplaintState(StatesGroup):
+    waiting_for_issue = State()
+    waiting_for_photo = State()
+    waiting_for_confirm = State()
 
-SYSTEM_INSTRUCTION = (
-    "You are the professional DCW Support AI. "
-    "1. Start by greeting and asking for the issue. "
-    "2. Once user explains, ask if they have any screenshot/proof. "
-    "3. Only tell them to 'Click Submit below' after you have collected enough info. "
-    "Be polite and reply in the user's language."
-)
+# --- HANDLERS ---
 
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    user_data[message.from_user.id] = {"text": "", "photo": None}
-    await message.reply("<b>Welcome to DCW Support</b> 🛠\n\nHow can I help you today? Please explain your problem in detail.")
+@dp.message_handler(commands=['start'], state="*")
+async def start_handler(message: types.Message, state: FSMContext):
+    await state.finish() # Purana data clear
+    await ComplaintState.waiting_for_issue.set()
+    await message.reply("<b>Hello! DCW AI Support Assistant here.</b> 🛠\n\nPlease describe your problem in detail. What happened?")
 
-@dp.message_handler(content_types=['text', 'photo'])
-async def handle_flow(message: types.Message):
-    uid = message.from_user.id
-    if uid not in user_data:
-        user_data[uid] = {"text": "", "photo": None}
+@dp.message_handler(state=ComplaintState.waiting_for_issue)
+async def process_issue(message: types.Message, state: FSMContext):
+    await state.update_data(issue_text=message.text)
+    
+    # AI response for empathy
+    response = ai_model.generate_content(f"User is reporting an issue: {message.text}. Reply politely in the user's language and ask them to send a screenshot or proof if they have any, otherwise type /skip.")
+    
+    await ComplaintState.waiting_for_photo.set()
+    await message.reply(response.text)
 
+@dp.message_handler(content_types=['photo', 'text'], state=ComplaintState.waiting_for_photo)
+async def process_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    
     if message.photo:
-        user_data[uid]["photo"] = message.photo[-1].file_id
-        user_input = "[User sent a screenshot]"
+        await state.update_data(photo_id=message.photo[-1].file_id)
+    elif message.text.lower() == '/skip':
+        await state.update_data(photo_id=None)
     else:
-        user_data[uid]["text"] += f"\n- {message.text}"
-        user_input = message.text
-
-    # AI decide karega kya bolna hai
-    try:
-        response = ai_model.generate_content(f"{SYSTEM_INSTRUCTION}\nUser says: {user_input}")
-        bot_reply = response.text
-    except:
-        bot_reply = "I see. Please provide more details or a screenshot, then you can submit."
-
-    # Buttons sirf tab dikhayenge jab user ne thodi baat kar li ho
-    kb = InlineKeyboardMarkup(row_width=2)
-    if len(user_data[uid]["text"]) > 10 or user_data[uid]["photo"]:
-        kb.add(
-            InlineKeyboardButton("Submit Complaint ✅", callback_data="sub"),
-            InlineKeyboardButton("Clear/Edit ❌", callback_data="clr")
-        )
-    
-    await message.reply(bot_reply, reply_markup=kb)
-
-@dp.callback_query_handler(text="sub")
-async def sub(call: types.CallbackQuery):
-    uid = call.from_user.id
-    data = user_data.get(uid)
-    
-    if not data or (not data["text"] and not data["photo"]):
-        await call.answer("Please provide some details first!", show_alert=True)
+        await message.reply("Please send a photo/screenshot or type /skip to continue.")
         return
 
+    # Final Summary creation using AI
+    updated_data = await state.get_data()
+    summary_prompt = f"Summarize this complaint for the user to review. Issue: {updated_data['issue_text']}. Tell them to check and click Submit."
+    ai_summary = ai_model.generate_content(summary_prompt)
+
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("Confirm & Submit ✅", callback_data="final_sub"),
+           InlineKeyboardButton("Restart ❌", callback_data="restart"))
+    
+    await ComplaintState.waiting_for_confirm.set()
+    await message.reply(f"<b>Review your details:</b>\n\n{ai_summary.text}", reply_markup=kb)
+
+@dp.callback_query_handler(text="final_sub", state=ComplaintState.waiting_for_confirm)
+async def send_to_admins(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    uid = call.from_user.id
+    
     report = (
-        f"📩 <b>New Complaint Received</b>\n"
+        f"🚨 <b>NEW CASE: #{uid}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 <b>User:</b> {call.from_user.full_name}\n"
         f"🆔 <b>ID:</b> <code>{uid}</code>\n"
-        f"📝 <b>Details:</b>\n{data['text']}\n"
+        f"📝 <b>Issue:</b> {data['issue_text']}\n"
         f"━━━━━━━━━━━━━━━━━━"
     )
-    
-    for admin in ADMIN_IDS:
+
+    for admin_id in ADMIN_IDS:
         try:
-            if data["photo"]:
-                await bot.send_photo(admin, data["photo"], caption=report)
+            if data.get('photo_id'):
+                await bot.send_photo(admin_id, data['photo_id'], caption=report)
             else:
-                await bot.send_message(admin, report)
+                await bot.send_message(admin_id, report)
         except: pass
 
-    await call.message.edit_text("<b>Done! ✅ Your complaint has been submitted to DCW Admins.</b>")
-    user_data.pop(uid, None)
+    await call.message.edit_text("<b>Success! ✅ Your complaint is now with our Admins.</b>")
+    await state.finish()
 
-@dp.callback_query_handler(text="clr")
-async def clr(call: types.CallbackQuery):
-    user_data[call.from_user.id] = {"text": "", "photo": None}
-    await call.message.edit_text("Data cleared. Please explain your issue again.")
+@dp.callback_query_handler(text="restart", state="*")
+async def restart(call: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await ComplaintState.waiting_for_issue.set()
+    await call.message.edit_text("Starting again... Please describe your problem.")
 
 if __name__ == '__main__':
     Thread(target=run).start()
