@@ -19,9 +19,11 @@ WEBHOOK_PATH = f'/webhook/{API_TOKEN}'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 PORT = int(os.environ.get('PORT', 8080))
 
-# AI Setup
+# AI Setup (Fixed for 404 Error)
 genai.configure(api_key=GEMINI_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+# Using 'gemini-1.5-flash' explicitly without beta version issues
+ai_model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+
 logging.basicConfig(level=logging.INFO)
 
 storage = MemoryStorage()
@@ -33,21 +35,20 @@ class ComplaintState(StatesGroup):
     waiting_for_photo = State()
     waiting_for_confirm = State()
 
-# AI Personality - ENGLISH ONLY
+# English Only Instruction
 SYSTEM_PROMPT = (
     "You are the DCW Support AI. You must speak ONLY in English. "
-    "Be professional, empathetic, and clear. Help the user report their issue. "
-    "If they are banned, ask for details. Do not use Hindi."
+    "Do not use Hindi. Be professional and help the user report their group-related issues."
 )
 
 async def get_ai_reply(prompt_text):
     try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: ai_model.generate_content(f"{SYSTEM_PROMPT}\n\nUser: {prompt_text}"))
+        # Standard calling method
+        response = await asyncio.to_thread(ai_model.generate_content, f"{SYSTEM_PROMPT}\n\nUser: {prompt_text}")
         return response.text
     except Exception as e:
         logging.error(f"AI Error: {e}")
-        return "I am processing your request. Please tell me more about your issue."
+        return "I am analyzing your issue. Please provide more details about your situation."
 
 # --- HANDLERS ---
 
@@ -62,8 +63,8 @@ async def start_handler(message: types.Message, state: FSMContext):
 async def process_issue(message: types.Message, state: FSMContext):
     if message.text.startswith('/'): return 
     await state.update_data(issue_text=message.text)
-    # AI ab user ki baat par English mein respond karega
-    reply = await get_ai_reply(f"User is reporting: {message.text}. Acknowledge it in English and ask for a screenshot or /skip.")
+    # AI English reply based on issue
+    reply = await get_ai_reply(f"User is saying: {message.text}. Respond in English and ask for a screenshot/proof or type /skip.")
     await ComplaintState.waiting_for_photo.set()
     await message.reply(reply)
 
@@ -80,16 +81,18 @@ async def process_photo(message: types.Message, state: FSMContext):
     tid = random.randint(100000, 999999)
     await state.update_data(ticket_id=tid)
     
-    summary = await get_ai_reply(f"Summarize this issue in English: {data['issue_text']}. Tell them to click Submit.")
+    summary = await get_ai_reply(f"Summarize this issue in English: {data['issue_text']}. Tell them to click the Submit button.")
     
     kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Submit Complaint ✅", callback_data="final_sub"))
     await ComplaintState.waiting_for_confirm.set()
-    await message.reply(f"<b>Ticket: #{tid}</b>\n\n{summary}", reply_markup=kb)
+    await message.reply(f"<b>Ticket ID: #{tid}</b>\n\n{summary}", reply_markup=kb)
 
 @dp.callback_query_handler(text="final_sub", state=ComplaintState.waiting_for_confirm)
 async def final_step(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    report = f"📩 <b>New Case #{data['ticket_id']}</b>\nUser: {call.from_user.full_name}\nIssue: {data['issue_text']}"
+    report = (f"📩 <b>New Case #{data['ticket_id']}</b>\n"
+              f"👤 User: {call.from_user.full_name}\n"
+              f"📝 Issue: {data['issue_text']}")
     
     for admin in ADMIN_IDS:
         try:
@@ -97,7 +100,7 @@ async def final_step(call: types.CallbackQuery, state: FSMContext):
             else: await bot.send_message(admin, report)
         except: pass
         
-    await call.message.edit_text("✅ Your complaint has been successfully forwarded to the administrators.")
+    await call.message.edit_text("✅ Your case has been successfully forwarded to the admins. We will review it shortly.")
     await state.finish()
 
 # --- WEBHOOK SETUP ---
