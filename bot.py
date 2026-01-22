@@ -10,7 +10,7 @@ from aiogram.utils.executor import start_webhook
 import google.generativeai as genai
 
 # --- CONFIG ---
-API_TOKEN = '8390111066:AAFGdAV0Wo0gqmw0QDysbbhqDe7jI5IASL8'
+API_TOKEN = '8036869660:AAEqzNfoe94qQB_7Ua-CsPlRab_Y1r8FYBI'
 GEMINI_KEY = 'AIzaSyChxjhkybI0Cx-vsw3K8PQkVQgjIBI27Hk'
 ADMIN_IDS = [8369001361, 906332891, 8306853454, 1011842896, 8322056037]
 
